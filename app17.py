@@ -59,6 +59,31 @@ def train_model():
         "message": "تم تدريب النموذج وحفظه بنجاح",
         "accuracy": model.score(X, y),
         "github_status": github_status
+    }@app.get("/train/model")
+def train_model():
+    readings = supabase.table("tbl_reading").select("*").execute().data
+    df = pd.DataFrame(readings)
+    if df.empty:
+        return {"error": "لا توجد بيانات للتدريب"}
+
+    df["is_emergency"] = ((df["temperature"] > 38) | (df["oxygen_saturation"] < 90)).astype(int)
+    X = df[["temperature", "oxygen_saturation", "pulse_rate"]]
+    y = df["is_emergency"]
+
+    model = RandomForestClassifier(n_estimators=100, random_state=42)
+    model.fit(X, y)
+
+    os.makedirs("models", exist_ok=True)
+    model_path = "models/health_model.pkl"
+    joblib.dump(model, model_path)
+
+    # رفع الملف إلى GitHub
+    github_status = upload_to_github(model_path, GITHUB_REPO, GITHUB_TOKEN)
+
+    return {
+        "message": "تم تدريب النموذج وحفظه بنجاح",
+        "accuracy": model.score(X, y),
+        "github_status": github_status
     }    readings = supabase.table("tbl_reading").select("*").execute().data
     df = pd.DataFrame(readings)
     if df.empty:
