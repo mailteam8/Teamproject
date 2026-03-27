@@ -1,23 +1,22 @@
-from fastapi import FastAPI
 import os
 import pickle
 import base64
 import requests
+from fastapi import FastAPI
 from supabase import create_client, Client
 
 app = FastAPI()
 
-# الاتصال بـ Supabase عبر متغيرات البيئة
-url = os.environ.get("SUPABASE_URL")
-key = os.environ.get("SUPABASE_KEY")
-supabase: Client = create_client(url, key)
-
-# إعدادات GitHub عبر متغيرات البيئة
+# قراءة متغيرات البيئة
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
-REPO = os.environ.get("GITHUB_REPO")            # مثال: "mailteam8/Teamproject"
-BRANCH = os.environ.get("GITHUB_BRANCH", "main")
+GITHUB_REPO = os.environ.get("GITHUB_REPO")
+GITHUB_BRANCH = os.environ.get("GITHUB_BRANCH", "main")
 
-# دالة تدريب النموذج لمريض واحد
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# دالة تدريب النموذج
 def train_patient_model(patient_id, data_batch):
     stats = []
     for col in zip(*data_batch):
@@ -32,7 +31,7 @@ def train_patient_model(patient_id, data_batch):
     return filename
 
 # دالة رفع الملف إلى GitHub
-def upload_file_to_github(filepath, repo=REPO, branch=BRANCH):
+def upload_file_to_github(filepath, repo=GITHUB_REPO, branch=GITHUB_BRANCH):
     filename = os.path.basename(filepath)
     url = f"https://api.github.com/repos/{repo}/contents/models/{filename}"
 
@@ -51,14 +50,12 @@ def upload_file_to_github(filepath, repo=REPO, branch=BRANCH):
     }
 
     response = requests.put(url, headers=headers, json=data)
-    # إرجاع النتيجة مع تفاصيل الخطأ إذا فشل
     if response.status_code in [200, 201]:
-        return True
+        return {"status": "success", "response": response.json()}
     else:
-        print("GitHub Error:", response.json())
-        return False
+        return {"status": "error", "response": response.json()}
 
-# ✅ Endpoint لتدريب جميع المرضى
+# ✅ تدريب جميع المرضى
 @app.get("/train")
 def train_all_patients():
     results = []
@@ -77,16 +74,14 @@ def train_all_patients():
 
         if data_batch:
             filename = train_patient_model(pat_id, data_batch)
-            uploaded = upload_file_to_github(filename)
-            status = "تم التدريب والرفع" if uploaded else "تم التدريب لكن فشل الرفع"
+            upload_result = upload_file_to_github(filename)
+            results.append({"pat_id": pat_id, "upload_result": upload_result})
         else:
-            status = "⚠️ البيانات غير كافية"
-
-        results.append({"pat_id": pat_id, "status": status})
+            results.append({"pat_id": pat_id, "status": "⚠️ البيانات غير كافية"})
 
     return results
 
-# ✅ Endpoint لفحص مريض محدد عبر إدخال pat_id
+# ✅ فحص مريض محدد
 @app.get("/check/{pat_id}")
 def check_patient(pat_id: str):
     readings_response = supabase.table("tbl_reading").select("*").eq("pat_id", pat_id).execute()
@@ -111,13 +106,70 @@ def check_patient(pat_id: str):
 
     if data_batch:
         filename = train_patient_model(pat_id, data_batch)
-        uploaded = upload_file_to_github(filename)
-        status = "تم التدريب والرفع" if uploaded else "تم التدريب لكن فشل الرفع"
+        upload_result = upload_file_to_github(filename)
         return {
             "pat_id": pat_id,
             "count_readings": len(data_batch),
-            "status": status,
+            "upload_result": upload_result,
             "readings": details
         }
     else:
         return {"pat_id": pat_id, "status": "⚠️ البيانات غير كافية"}
+
+# ✅ التنبؤ باستخدام آخر 10 قراءات
+@app.get("/predict/{pat_id}")
+def predict_patient(pat_id: str):
+    filename = f"heart_guard_{pat_id}.pkl"
+    if not os.path.exists(filename):
+        return {"pat_id": pat_id, "status": "⚠️ النموذج غير موجود، درّب أولاً عبر /check أو /train"}
+
+    with open(filename, "rb") as f:
+        stats = pickle.load(f)
+
+    readings_response = supabase.table("tbl_reading")\
+        .select("*")\
+        .eq("pat_id", pat_id)\
+        .order("created_at", desc=True)\
+        .limit(10)\
+        .execute()
+    readings = readings_response.data
+
+    if not readings:
+        return {"pat_id": pat_id, "status": "⚠️ لا توجد قراءات"}
+
+    predictions = []
+    for r in readings:
+        values = [r["oxygen_saturation"], r["pulse_rate"], r["temperature"]]
+        result = []
+        for idx, val in enumerate(values):
+            avg = stats[idx]["avg"]
+            min_val = stats[idx]["min"]
+            max_val = stats[idx]["max"]
+
+            if val < min_val or val > max_val:
+                status = "❌ غير طبيعي"
+            else:
+                status = "✅ طبيعي"
+
+            result.append({
+                "value": val,
+                "avg": avg,
+                "min": min_val,
+                "max": max_val,
+                "status": status
+            })
+
+        predictions.append({
+            "read_id": r.get("read_id"),
+            "created_at": r.get("created_at"),
+            "oxygen_saturation": r["oxygen_saturation"],
+            "pulse_rate": r["pulse_rate"],
+            "temperature": r["temperature"],
+            "prediction": result
+        })
+
+    return {
+        "pat_id": pat_id,
+        "count_readings": len(predictions),
+        "predictions": predictions
+    }
