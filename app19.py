@@ -3,6 +3,7 @@ import pickle
 import base64
 import requests
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 from supabase import create_client, Client
 
 app = FastAPI()
@@ -173,3 +174,16 @@ def predict_patient(pat_id: str):
         "count_readings": len(predictions),
         "predictions": predictions
     }
+
+# ✅ تنزيل النموذج مباشرة من الخدمة
+@app.get("/download/{pat_id}")
+def download_model(pat_id: str):
+    filename = f"heart_guard_{pat_id}.pkl"
+    if os.path.exists(filename):
+        return FileResponse(
+            filename,
+            media_type="application/octet-stream",
+            filename=filename
+        )
+    else:
+        return {"error": "⚠️ الملف غير موجود، درّب أولاً عبر /check أو /train"}
