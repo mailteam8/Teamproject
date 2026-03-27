@@ -14,7 +14,7 @@ supabase: Client = create_client(url, key)
 
 # إعدادات GitHub عبر متغيرات البيئة
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
-REPO = os.environ.get("GITHUB_REPO")            # مثال: "username/repo"
+REPO = os.environ.get("GITHUB_REPO")
 BRANCH = os.environ.get("GITHUB_BRANCH", "main")
 
 def train_patient_model(patient_id, data_batch):
@@ -29,6 +29,13 @@ def train_patient_model(patient_id, data_batch):
     with open(filename, "wb") as f:
         pickle.dump(stats, f)
     return filename
+
+def load_patient_model(patient_id):
+    filename = f"heart_guard_{patient_id}.pkl"
+    if os.path.exists(filename):
+        with open(filename, "rb") as f:
+            return pickle.load(f)
+    return None
 
 def upload_file_to_github(filepath, repo=REPO, branch=BRANCH):
     filename = os.path.basename(filepath)
@@ -54,15 +61,11 @@ def upload_file_to_github(filepath, repo=REPO, branch=BRANCH):
 @app.get("/train")
 def train_all_patients():
     results = []
-
-    # قراءة المرضى من جدول tbl_patient
     patients_response = supabase.table("tbl_patient").select("pat_id").execute()
     patients = patients_response.data
 
     for patient in patients:
         pat_id = patient["pat_id"]
-
-        # قراءة القراءات الخاصة بالمريض من جدول tbl_reading
         readings_response = supabase.table("tbl_reading").select("*").eq("pat_id", pat_id).execute()
         readings = readings_response.data
 
@@ -81,3 +84,26 @@ def train_all_patients():
         results.append({"pat_id": pat_id, "status": status})
 
     return results
+
+@app.post("/predict/{pat_id}")
+def predict(pat_id: str, oxygen_saturation: float, pulse_rate: int, temperature: float):
+    stats = load_patient_model(pat_id)
+    if not stats:
+        return {"pat_id": pat_id, "status": "⚠️ لا يوجد نموذج مدرب"}
+
+    new_reading = [oxygen_saturation, pulse_rate, temperature]
+    results = []
+    labels = ["oxygen_saturation", "pulse_rate", "temperature"]
+
+    for i, val in enumerate(new_reading):
+        avg, min_val, max_val = stats[i]["avg"], stats[i]["min"], stats[i]["max"]
+        status = "طبيعي" if min_val <= val <= max_val else "خارج النطاق"
+        results.append({
+            "metric": labels[i],
+            "value": val,
+            "avg": avg,
+            "range": [min_val, max_val],
+            "status": status
+        })
+
+    return {"pat_id": pat_id, "prediction": results}
