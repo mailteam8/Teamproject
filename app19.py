@@ -14,9 +14,10 @@ supabase: Client = create_client(url, key)
 
 # إعدادات GitHub عبر متغيرات البيئة
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
-REPO = os.environ.get("GITHUB_REPO")
+REPO = os.environ.get("GITHUB_REPO")            # مثال: "mailteam8/Teamproject"
 BRANCH = os.environ.get("GITHUB_BRANCH", "main")
 
+# دالة تدريب النموذج لمريض واحد
 def train_patient_model(patient_id, data_batch):
     stats = []
     for col in zip(*data_batch):
@@ -30,13 +31,7 @@ def train_patient_model(patient_id, data_batch):
         pickle.dump(stats, f)
     return filename
 
-def load_patient_model(patient_id):
-    filename = f"heart_guard_{patient_id}.pkl"
-    if os.path.exists(filename):
-        with open(filename, "rb") as f:
-            return pickle.load(f)
-    return None
-
+# دالة رفع الملف إلى GitHub
 def upload_file_to_github(filepath, repo=REPO, branch=BRANCH):
     filename = os.path.basename(filepath)
     url = f"https://api.github.com/repos/{repo}/contents/models/{filename}"
@@ -56,8 +51,14 @@ def upload_file_to_github(filepath, repo=REPO, branch=BRANCH):
     }
 
     response = requests.put(url, headers=headers, json=data)
-    return response.status_code in [200, 201]
+    # إرجاع النتيجة مع تفاصيل الخطأ إذا فشل
+    if response.status_code in [200, 201]:
+        return True
+    else:
+        print("GitHub Error:", response.json())
+        return False
 
+# ✅ Endpoint لتدريب جميع المرضى
 @app.get("/train")
 def train_all_patients():
     results = []
@@ -79,31 +80,44 @@ def train_all_patients():
             uploaded = upload_file_to_github(filename)
             status = "تم التدريب والرفع" if uploaded else "تم التدريب لكن فشل الرفع"
         else:
-            status = "بيانات غير كافية"
+            status = "⚠️ البيانات غير كافية"
 
         results.append({"pat_id": pat_id, "status": status})
 
     return results
 
-@app.post("/predict/{pat_id}")
-def predict(pat_id: str, oxygen_saturation: float, pulse_rate: int, temperature: float):
-    stats = load_patient_model(pat_id)
-    if not stats:
-        return {"pat_id": pat_id, "status": "⚠️ لا يوجد نموذج مدرب"}
+# ✅ Endpoint لفحص مريض محدد عبر إدخال pat_id
+@app.get("/check/{pat_id}")
+def check_patient(pat_id: str):
+    readings_response = supabase.table("tbl_reading").select("*").eq("pat_id", pat_id).execute()
+    readings = readings_response.data
 
-    new_reading = [oxygen_saturation, pulse_rate, temperature]
-    results = []
-    labels = ["oxygen_saturation", "pulse_rate", "temperature"]
+    if not readings:
+        return {"pat_id": pat_id, "status": "⚠️ لا توجد قراءات"}
 
-    for i, val in enumerate(new_reading):
-        avg, min_val, max_val = stats[i]["avg"], stats[i]["min"], stats[i]["max"]
-        status = "طبيعي" if min_val <= val <= max_val else "خارج النطاق"
-        results.append({
-            "metric": labels[i],
-            "value": val,
-            "avg": avg,
-            "range": [min_val, max_val],
-            "status": status
-        })
+    data_batch = []
+    details = []
+    for r in readings:
+        if all(k in r for k in ["oxygen_saturation", "pulse_rate", "temperature"]):
+            data_batch.append([r["oxygen_saturation"], r["pulse_rate"], r["temperature"]])
+            details.append({
+                "read_id": r.get("read_id"),
+                "created_at": r.get("created_at"),
+                "oxygen_saturation": r["oxygen_saturation"],
+                "pulse_rate": r["pulse_rate"],
+                "temperature": r["temperature"],
+                "location": r.get("location")
+            })
 
-    return {"pat_id": pat_id, "prediction": results}
+    if data_batch:
+        filename = train_patient_model(pat_id, data_batch)
+        uploaded = upload_file_to_github(filename)
+        status = "تم التدريب والرفع" if uploaded else "تم التدريب لكن فشل الرفع"
+        return {
+            "pat_id": pat_id,
+            "count_readings": len(data_batch),
+            "status": status,
+            "readings": details
+        }
+    else:
+        return {"pat_id": pat_id, "status": "⚠️ البيانات غير كافية"}
