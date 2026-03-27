@@ -11,7 +11,7 @@ supabase: Client = create_client(url, key)
 
 # إعدادات GitHub عبر متغيرات البيئة
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
-REPO = os.environ.get("GITHUB_REPO")
+REPO = os.environ.get("GITHUB_REPO")            # مثال: "username/repo"
 BRANCH = os.environ.get("GITHUB_BRANCH", "main")
 
 # دوال النموذج
@@ -28,24 +28,6 @@ def train_patient_model(patient_id, data_batch):
         pickle.dump(stats, f)
     print(f"✅ تم تحديث النموذج الشخصي للمريض {patient_id}")
     return filename
-
-def load_patient_model(patient_id):
-    filename = f"heart_guard_{patient_id}.pkl"
-    if os.path.exists(filename):
-        with open(filename, "rb") as f:
-            return pickle.load(f)
-    return None
-
-def predict(patient_id, new_reading):
-    stats = load_patient_model(patient_id)
-    if not stats:
-        return f"⚠️ لا يوجد نموذج للمريض {patient_id}"
-    results = []
-    for i, val in enumerate(new_reading):
-        avg, min_val, max_val = stats[i]["avg"], stats[i]["min"], stats[i]["max"]
-        status = "طبيعي" if min_val <= val <= max_val else "خارج النطاق"
-        results.append({"value": val, "avg": avg, "range": (min_val, max_val), "status": status})
-    return results
 
 def upload_file_to_github(filepath, repo=REPO, branch=BRANCH):
     filename = os.path.basename(filepath)
@@ -71,27 +53,28 @@ def upload_file_to_github(filepath, repo=REPO, branch=BRANCH):
     else:
         print(f"⚠️ فشل رفع الملف {filename}: {response.json()}")
 
-# قراءة القراءات من جدول tbl_reading
-readings_response = supabase.table("tbl_reading").select("*").execute()
-readings = readings_response.data
+# 1️⃣ قراءة المرضى من جدول tbl_patient
+patients_response = supabase.table("tbl_patient").select("pat_id").execute()
+patients = patients_response.data
 
-# تجميع القراءات لكل مريض
-patients_data = {}
-for r in readings:
-    pat_id = r["pat_id"]
-    if pat_id not in patients_data:
-        patients_data[pat_id] = []
-    if all(k in r for k in ["oxygen_saturation", "pulse_rate", "temperature"]):
-        patients_data[pat_id].append([r["oxygen_saturation"], r["pulse_rate"], r["temperature"]])
+print("📋 قائمة المرضى:")
+for patient in patients:
+    print(f"- {patient['pat_id']}")
 
-# تدريب النماذج ورفعها
-for pat_id, data_batch in patients_data.items():
+# 2️⃣ لكل مريض، قراءة القراءات من جدول tbl_reading
+for patient in patients:
+    pat_id = patient["pat_id"]
+    readings_response = supabase.table("tbl_reading").select("*").eq("pat_id", pat_id).execute()
+    readings = readings_response.data
+
+    data_batch = []
+    for r in readings:
+        if all(k in r for k in ["oxygen_saturation", "pulse_rate", "temperature"]):
+            data_batch.append([r["oxygen_saturation"], r["pulse_rate"], r["temperature"]])
+
+    # 3️⃣ تدريب النموذج ورفعه
     if data_batch:
         filename = train_patient_model(pat_id, data_batch)
         upload_file_to_github(filename)
     else:
         print(f"⚠️ لا توجد بيانات كافية للمريض {pat_id}")
-
-# مثال للتنبؤ باستخدام قراءة جديدة
-example_reading = [95.0, 72, 36.8]  # oxygen_saturation, pulse_rate, temperature
-print("🔮 نتيجة التنبؤ:", predict("10ac3acc-e296-4579-a749-7d61ad54ee5d", example_reading))
