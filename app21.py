@@ -234,4 +234,4 @@ def predict_patient(pat_id: str):
 # ✅ تشغيل التطبيق محليًا وعلى Render
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
-    uvicorn.run("app20:app", host="0.0.0.0", port=port, reload=True)
+    uvicorn.run("app21:app", host="0.0.0.0", port=port, reload=True)
