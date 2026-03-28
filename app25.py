@@ -38,6 +38,32 @@ general_recommendations = [
     "Stable readings. Keep up your healthy lifestyle and regular checkups."
 ]
 
+# رسائل التنبيه حسب نوع التشخيص
+alert_messages = {
+    "Respiratory risk": "⚠️ انخفاض خطير في نسبة الأكسجين، يجب التدخل الطبي فورًا",
+    "Cardiac stress": "⚠️ معدل نبض مرتفع جدًا، خطر على القلب، يجب مراجعة الطبيب فورًا",
+    "Unstable angina": "⚠️ أعراض ذبحة صدرية غير مستقرة، حالة حرجة تستدعي تدخل عاجل",
+    "Hypertension crisis": "⚠️ ضغط دم مرتفع جدًا، خطر نزيف أو جلطة، تدخل عاجل مطلوب",
+    "Sepsis suspected": "⚠️ حرارة مرتفعة مع مؤشرات عدوى، احتمال تسمم دم، يجب الإسعاف فورًا",
+    "Hypothermia risk": "⚠️ انخفاض شديد في درجة الحرارة، خطر على الحياة، تدخل عاجل مطلوب",
+    "Arrhythmia detected": "⚠️ اضطراب في ضربات القلب، قد يشير إلى خلل خطير، راجع الطبيب فورًا",
+    "Shock suspected": "⚠️ مؤشرات صدمة جسدية، حالة طارئة تستدعي تدخل طبي فوري",
+    "Critical condition": "⚠️ حالة حرجة جدًا، يجب النقل إلى الطوارئ فورًا"
+}
+
+# توصيات التقارير حسب نوع التشخيص
+report_recommendations = {
+    "Respiratory risk": "Your oxygen level is critically low. Seek immediate medical attention and avoid exertion.",
+    "Cardiac stress": "Your heart rate is dangerously high. Rest immediately and consult a cardiologist.",
+    "Unstable angina": "Signs of unstable angina detected. Emergency care is required to prevent complications.",
+    "Hypertension crisis": "Blood pressure is critically elevated. Emergency intervention is necessary to reduce risks.",
+    "Sepsis suspected": "High temperature and infection markers detected. Immediate hospital care is strongly advised.",
+    "Hypothermia risk": "Body temperature is dangerously low. Warm up immediately and seek urgent medical help.",
+    "Arrhythmia detected": "Irregular heartbeat detected. Please consult a cardiologist as soon as possible.",
+    "Shock suspected": "Indicators of shock detected. Emergency medical intervention is required.",
+    "Critical condition": "Overall condition is critical. Immediate transfer to emergency care is necessary."
+}
+
 # تدريب نموذج Random Forest
 def train_random_forest(patient_id, readings):
     X, y = [], []
@@ -71,20 +97,6 @@ def create_general_model():
     filename = "heart_guard_general.pkl"
     train_random_forest("general", general_data)
     return filename
-
-# تحديث النموذج عند إضافة قراءة جديدة
-def update_model_after_new_reading(pat_id: str):
-    readings_response = supabase.table("tbl_reading")\
-        .select("*")\
-        .eq("pat_id", pat_id)\
-        .execute()
-    readings = readings_response.data
-
-    if readings:
-        train_random_forest(pat_id, readings)
-    else:
-        if not os.path.exists("heart_guard_general.pkl"):
-            create_general_model()
 
 # التنبؤ باستخدام Random Forest
 def predict_with_rf(patient_id, readings):
@@ -121,29 +133,43 @@ def predict_with_rf(patient_id, readings):
 @app.get("/predict/{pat_id}")
 def predict_patient(pat_id: str):
     try:
-        readings_response = supabase.table("tbl_reading")\
+        # ✅ جلب آخر قراءة فقط
+        last_reading_response = supabase.table("tbl_reading")\
             .select("*")\
             .eq("pat_id", pat_id)\
             .order("created_at", desc=True)\
-            .limit(10)\
+            .limit(1)\
             .execute()
-        readings = readings_response.data
+        last_reading = last_reading_response.data
 
-        if not readings:
+        if not last_reading:
             return {"pat_id": pat_id, "status": "⚠️ لا توجد قراءات"}
 
-        predictions = predict_with_rf(pat_id, readings)
+        # ✅ جلب كل القراءات لتحديث PKL
+        all_readings_response = supabase.table("tbl_reading")\
+            .select("*")\
+            .eq("pat_id", pat_id)\
+            .execute()
+        all_readings = all_readings_response.data
+
+        if all_readings:
+            train_random_forest(pat_id, all_readings)
+
+        # ✅ التنبؤ باستخدام آخر قراءة فقط
+        predictions = predict_with_rf(pat_id, last_reading)
 
         if not predictions:
             return {"pat_id": pat_id, "status": "⚠️ لا توجد بيانات كافية لتدريب النموذج"}
 
         diagnosis = predictions[-1]["diagnosis"]
 
+        # ✅ توصية التقرير
         if diagnosis == "Normal":
             recommendation = random.choice(general_recommendations)
         else:
-            recommendation = "⚠️ حالة حرجة، يجب التدخل الطبي فورًا"
+            recommendation = report_recommendations.get(diagnosis, "⚠️ حالة حرجة، يجب التدخل الطبي فورًا")
 
+        # ✅ إنشاء التقرير
         report_data = {
             "rep_date": datetime.utcnow().isoformat(),
             "rep_diagnosis": diagnosis,
@@ -152,11 +178,13 @@ def predict_patient(pat_id: str):
         }
         report_response = supabase.table("tbl_report").insert(report_data).execute()
 
+        # ✅ إنشاء التنبيه إذا الحالة خطيرة
         alert_response = None
         if diagnosis != "Normal":
+            alert_message = alert_messages.get(diagnosis, "⚠️ حالة حرجة، يجب التدخل الطبي فورًا")
             alert_data = {
                 "alert_type": diagnosis,
-                "alert_message": recommendation,
+                "alert_message": alert_message,
                 "alert_timestamp": datetime.utcnow().isoformat(),
                 "is_seen": False,
                 "pat_id": pat_id
@@ -165,14 +193,12 @@ def predict_patient(pat_id: str):
 
         return {
             "pat_id": pat_id,
-            "count_readings": len(predictions),
             "report": report_response.data,
             "alert": alert_response.data if alert_response else None
         }
 
     except Exception as e:
         return {"pat_id": pat_id, "status": "❌ خطأ أثناء التنبؤ", "message": str(e)}
-
-if __name__ == "__main__":
+      if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
-    uvicorn.run("app25:app", host="0.0.0.0", port=port, reload=True)
+    uvicorn.run("app25:app", host="0.0.0.0", port=port, reload=True)  
