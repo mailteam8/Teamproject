@@ -189,7 +189,7 @@ def predict_patient(pat_id: str):
                 "is_seen": False,
                 "pat_id": pat_id
             }
-            alert_response = supabase.table("tb_alert").insert(alert_data).execute()
+            alert_response = supabase.table("tbl_alert").insert(alert_data).execute()
 
         return {
             "pat_id": pat_id,
